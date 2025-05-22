@@ -27,6 +27,8 @@ from autorun_manager import AutorunManager
 # Импортируем диалог отказа от ответственности
 from disclaimer_dialog import DisclaimerDialog
 from system_cleaner import SystemCleaner
+# Импортируем модуль управления программами
+from program_uninstaller import ProgramUninstallerWidget
 
 
 # Создаем глобальный экземпляр кеша
@@ -322,6 +324,10 @@ class MainWindow(QMainWindow):
         self.system_cleaner_tab = QWidget()
         self.tabs.addTab(self.system_cleaner_tab, "Очистка системы")
         self.setup_cleaner_tab()
+        
+        # Добавляем вкладку управления программами
+        program_uninstaller = ProgramUninstallerWidget(self)
+        self.tabs.addTab(program_uninstaller, "Управление программами")
         
         main_layout.addWidget(self.tabs)
         
