@@ -12,6 +12,8 @@ meta_pkgs = [
     'numpy',
     'pandas',
     'scikit_learn',
+    'psutil',
+    'tqdm',
 ]
 
 # Только необходимые пакеты для данных и подмодулей
@@ -19,6 +21,8 @@ mod_pkgs = [
     'numpy',
     'pandas',
     'sklearn',
+    'psutil',
+    'tqdm',
 ]
 
 # Сбор метаданных
@@ -50,7 +54,7 @@ a = Analysis(
     hiddenimports=hiddenimports + [
         'win32file', 'win32api', 'wmi', 'sip',
         'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets',
-        'folder_search_cpp',
+        'folder_search_cpp', 'winreg', 'threading', 'shutil',
     ],
     hookspath=[],
     hooksconfig={},
@@ -59,7 +63,7 @@ a = Analysis(
         'transformers', 'torch', 'tokenizers', 'huggingface-hub',
         'einops', 'safetensors', 'tensorflow', 'keras',
     ],
-    noarchive=False,  # Использовать архив PYZ (если True — будет .pyz, если False — всё как есть)
+    noarchive=False,  # Использовать архив PYZ
     optimize=2,  # Максимальная оптимизация
 )
 
@@ -86,5 +90,6 @@ exe = EXE(
     disable_windowed_traceback=True,  # Отключить traceback в GUI
     target_arch=None,
     codesign_identity=None,
-    runtime_tmpdir=None,  # Не сохранять во временную папку
+    runtime_tmpdir=None,  # Не сохранять во временную папку,
+    version='version.txt',  # Добавляем информацию о версии
 )

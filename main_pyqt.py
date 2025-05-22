@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
                              QComboBox, QStyle, QStyledItemDelegate, QAbstractItemView,
                              QTabWidget, QDialog, QTreeWidget, QTreeWidgetItem, QGroupBox,
-                             QCheckBox)
+                             QCheckBox, QSystemTrayIcon, QMenu, QAction)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QSettings
 from PyQt5.QtGui import QIcon, QColor, QFont, QPalette, QBrush, QLinearGradient
 
@@ -40,6 +40,23 @@ SECONDARY_COLOR = "#6b8cae"
 ACCENT_COLOR = "#e63946"
 BACKGROUND_COLOR = "#f8f9fa"
 TEXT_COLOR = "#212529"
+
+# Глобальная переменная для хранения ссылки на иконку в трее
+global_tray_icon = None
+
+class CustomTrayIcon(QSystemTrayIcon):
+    """Кастомная иконка в трее"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setIcon(QIcon("icon1.ico"))
+        self.setToolTip("SkripClean - Мониторинг системы")
+        
+        # Создаем контекстное меню
+        self.menu = QMenu()
+        
+        # Действия меню будут добавлены в main()
+        self.setContextMenu(self.menu)
 
 # Класс для выполнения сканирования в отдельном потоке
 class ScanWorker(QThread):
@@ -155,7 +172,7 @@ class CleanerThread(QThread):
 
 class SettingsWidget(QWidget):
     """Виджет настроек приложения"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_ui()
@@ -164,7 +181,13 @@ class SettingsWidget(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
-        
+
+        # Добавляем текст о бета-тестировании
+        beta_label = QLabel(
+            "Функция в бета-тестировании, если возникнут ошибки, просьба отправить их разработчику @solecoss")
+        beta_label.setStyleSheet(f"font-size: 12px; color: {TEXT_COLOR}; font-style: italic; margin-bottom: 10px;")
+        layout.addWidget(beta_label)
+
         # Группа общих настроек
         general_group = QGroupBox("Общие настройки")
         general_layout = QVBoxLayout()
@@ -365,6 +388,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SkripClean - Очистка диска")
         self.setMinimumSize(800, 600)
+        
+        # Загружаем настройки
+        self.settings = QSettings("SkripClean", "Settings")
+        self.minimize_to_tray = self.settings.value("minimize_to_tray", True, type=bool)
+        
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_COLOR}; }}
             QPushButton {{ 
@@ -904,6 +932,36 @@ class MainWindow(QMainWindow):
         self.cleanup_progress.setValue(100)
         self.cleanup_progress.setFormat("Очистка завершена")
 
+    def closeEvent(self, event):
+        """Обработка закрытия окна"""
+        if self.minimize_to_tray and global_tray_icon and global_tray_icon.isVisible():
+            event.ignore()
+            self.hide()
+            global_tray_icon.showMessage(
+                "SkripClean",
+                "Программа продолжает работать в трее",
+                QSystemTrayIcon.Information,
+                2000
+            )
+        else:
+            reply = QMessageBox.question(
+                self,
+                'Подтверждение',
+                'Вы уверены, что хотите закрыть программу?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                # Сохраняем настройки перед закрытием
+                self.settings.sync()
+                event.accept()
+                # Закрываем иконку в трее
+                if global_tray_icon:
+                    global_tray_icon.hide()
+                QApplication.quit()
+            else:
+                event.ignore()
+
 # Запуск приложения
 def main():
     app = QApplication(sys.argv)
@@ -919,8 +977,39 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     
+    # Создаем иконку в трее и сохраняем ссылку на нее
+    global global_tray_icon
+    global_tray_icon = CustomTrayIcon()
+    
     window = MainWindow()
+    
+    # Добавляем действия в меню трея
+    show_action = QAction("Показать", global_tray_icon)
+    show_action.triggered.connect(window.show)
+    global_tray_icon.menu.addAction(show_action)
+    
+    settings_action = QAction("Параметры", global_tray_icon)
+    settings_action.triggered.connect(lambda: window.show() and window.tabs.setCurrentIndex(4))  # Индекс вкладки параметров
+    global_tray_icon.menu.addAction(settings_action)
+    
+    global_tray_icon.menu.addSeparator()
+    
+    exit_action = QAction("Выход", global_tray_icon)
+    exit_action.triggered.connect(app.quit)
+    global_tray_icon.menu.addAction(exit_action)
+    
+    # Показываем окно и иконку в трее
     window.show()
+    global_tray_icon.show()
+    
+    # Добавляем обработку двойного клика по иконке в трее
+    def tray_icon_activated(reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            window.show()
+            window.activateWindow()
+    
+    global_tray_icon.activated.connect(tray_icon_activated)
+    
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
