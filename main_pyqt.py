@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QComboBox, QStyle, QStyledItemDelegate, QAbstractItemView,
                              QTabWidget, QDialog, QTreeWidget, QTreeWidgetItem, QGroupBox,
                              QCheckBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QSettings
 from PyQt5.QtGui import QIcon, QColor, QFont, QPalette, QBrush, QLinearGradient
 
 # Импортируем функции из main.py и C++ модуля
@@ -152,6 +152,212 @@ class CleanerThread(QThread):
         results = cleaner.clean_system()
         self.progress_updated.emit(results)
         self.finished.emit()
+
+class SettingsWidget(QWidget):
+    """Виджет настроек приложения"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.init_ui()
+        self.load_settings()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Группа общих настроек
+        general_group = QGroupBox("Общие настройки")
+        general_layout = QVBoxLayout()
+        
+        # Автозапуск
+        self.autostart_check = QCheckBox("Запускать при старте Windows")
+        general_layout.addWidget(self.autostart_check)
+        
+        # Сворачивание в трей
+        self.minimize_to_tray_check = QCheckBox("Сворачивать в трей вместо закрытия")
+        general_layout.addWidget(self.minimize_to_tray_check)
+        
+        # Уведомления
+        self.notifications_check = QCheckBox("Показывать уведомления")
+        general_layout.addWidget(self.notifications_check)
+        
+        general_group.setLayout(general_layout)
+        layout.addWidget(general_group)
+        
+        # Группа настроек мониторинга
+        monitoring_group = QGroupBox("Настройки мониторинга")
+        monitoring_layout = QVBoxLayout()
+        
+        # Интервал проверки
+        check_interval_layout = QHBoxLayout()
+        check_interval_layout.addWidget(QLabel("Интервал проверки:"))
+        self.check_interval_spin = QSpinBox()
+        self.check_interval_spin.setRange(1, 60)
+        self.check_interval_spin.setValue(5)
+        self.check_interval_spin.setSuffix(" мин")
+        check_interval_layout.addWidget(self.check_interval_spin)
+        check_interval_layout.addStretch()
+        monitoring_layout.addLayout(check_interval_layout)
+        
+        # Порог предупреждения о диске
+        disk_threshold_layout = QHBoxLayout()
+        disk_threshold_layout.addWidget(QLabel("Порог предупреждения о заполнении диска:"))
+        self.disk_threshold_spin = QSpinBox()
+        self.disk_threshold_spin.setRange(50, 95)
+        self.disk_threshold_spin.setValue(85)
+        self.disk_threshold_spin.setSuffix("%")
+        disk_threshold_layout.addWidget(self.disk_threshold_spin)
+        disk_threshold_layout.addStretch()
+        monitoring_layout.addLayout(disk_threshold_layout)
+        
+        # Порог размера временных файлов
+        temp_threshold_layout = QHBoxLayout()
+        temp_threshold_layout.addWidget(QLabel("Порог предупреждения о временных файлах:"))
+        self.temp_threshold_spin = QSpinBox()
+        self.temp_threshold_spin.setRange(100, 10000)
+        self.temp_threshold_spin.setValue(1000)
+        self.temp_threshold_spin.setSuffix(" МБ")
+        temp_threshold_layout.addWidget(self.temp_threshold_spin)
+        temp_threshold_layout.addStretch()
+        monitoring_layout.addLayout(temp_threshold_layout)
+        
+        monitoring_group.setLayout(monitoring_layout)
+        layout.addWidget(monitoring_group)
+        
+        # Группа настроек очистки
+        cleanup_group = QGroupBox("Настройки очистки")
+        cleanup_layout = QVBoxLayout()
+        
+        # Автоматическая очистка
+        self.auto_cleanup_check = QCheckBox("Автоматическая очистка при достижении порога")
+        cleanup_layout.addWidget(self.auto_cleanup_check)
+        
+        # Защита системных файлов
+        self.protect_system_check = QCheckBox("Защита системных файлов и папок")
+        self.protect_system_check.setChecked(True)
+        self.protect_system_check.setEnabled(False)  # Всегда включено
+        cleanup_layout.addWidget(self.protect_system_check)
+        
+        # Подтверждение удаления
+        self.confirm_deletion_check = QCheckBox("Запрашивать подтверждение при удалении")
+        self.confirm_deletion_check.setChecked(True)
+        cleanup_layout.addWidget(self.confirm_deletion_check)
+        
+        cleanup_group.setLayout(cleanup_layout)
+        layout.addWidget(cleanup_group)
+        
+        # Кнопки
+        buttons_layout = QHBoxLayout()
+        
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(self.save_settings)
+        buttons_layout.addWidget(save_button)
+        
+        reset_button = QPushButton("Сбросить")
+        reset_button.clicked.connect(self.reset_settings)
+        buttons_layout.addWidget(reset_button)
+        
+        layout.addLayout(buttons_layout)
+        layout.addStretch()
+        
+        # Подсказка внизу
+        hint_label = QLabel("* Некоторые настройки вступят в силу после перезапуска программы")
+        hint_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(hint_label)
+        
+    def load_settings(self):
+        """Загружает настройки из файла конфигурации"""
+        settings = QSettings("SkripClean", "Settings")
+        
+        # Загружаем общие настройки
+        self.autostart_check.setChecked(settings.value("autostart", False, type=bool))
+        self.minimize_to_tray_check.setChecked(settings.value("minimize_to_tray", True, type=bool))
+        self.notifications_check.setChecked(settings.value("notifications", True, type=bool))
+        
+        # Загружаем настройки мониторинга
+        self.check_interval_spin.setValue(settings.value("check_interval", 5, type=int))
+        self.disk_threshold_spin.setValue(settings.value("disk_threshold", 85, type=int))
+        self.temp_threshold_spin.setValue(settings.value("temp_threshold", 1000, type=int))
+        
+        # Загружаем настройки очистки
+        self.auto_cleanup_check.setChecked(settings.value("auto_cleanup", False, type=bool))
+        self.confirm_deletion_check.setChecked(settings.value("confirm_deletion", True, type=bool))
+        
+    def save_settings(self):
+        """Сохраняет настройки в файл конфигурации"""
+        settings = QSettings("SkripClean", "Settings")
+        
+        # Сохраняем общие настройки
+        settings.setValue("autostart", self.autostart_check.isChecked())
+        settings.setValue("minimize_to_tray", self.minimize_to_tray_check.isChecked())
+        settings.setValue("notifications", self.notifications_check.isChecked())
+        
+        # Сохраняем настройки мониторинга
+        settings.setValue("check_interval", self.check_interval_spin.value())
+        settings.setValue("disk_threshold", self.disk_threshold_spin.value())
+        settings.setValue("temp_threshold", self.temp_threshold_spin.value())
+        
+        # Сохраняем настройки очистки
+        settings.setValue("auto_cleanup", self.auto_cleanup_check.isChecked())
+        settings.setValue("confirm_deletion", self.confirm_deletion_check.isChecked())
+        
+        # Применяем настройки автозапуска
+        self.apply_autostart_settings()
+        
+        QMessageBox.information(self, "Настройки", "Настройки успешно сохранены")
+        
+    def reset_settings(self):
+        """Сбрасывает настройки на значения по умолчанию"""
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            "Вы уверены, что хотите сбросить все настройки на значения по умолчанию?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Сбрасываем общие настройки
+            self.autostart_check.setChecked(False)
+            self.minimize_to_tray_check.setChecked(True)
+            self.notifications_check.setChecked(True)
+            
+            # Сбрасываем настройки мониторинга
+            self.check_interval_spin.setValue(5)
+            self.disk_threshold_spin.setValue(85)
+            self.temp_threshold_spin.setValue(1000)
+            
+            # Сбрасываем настройки очистки
+            self.auto_cleanup_check.setChecked(False)
+            self.confirm_deletion_check.setChecked(True)
+            
+            # Сохраняем сброшенные настройки
+            self.save_settings()
+            
+    def apply_autostart_settings(self):
+        """Применяет настройки автозапуска"""
+        import winreg
+        
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "SkripClean"
+        
+        try:
+            if self.autostart_check.isChecked():
+                # Добавляем программу в автозапуск
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE)
+                app_path = sys.argv[0]
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{app_path}"')
+                winreg.CloseKey(key)
+            else:
+                # Удаляем программу из автозапуска
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE)
+                try:
+                    winreg.DeleteValue(key, app_name)
+                except WindowsError:
+                    pass  # Значение уже отсутствует
+                winreg.CloseKey(key)
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось изменить настройки автозапуска: {str(e)}")
 
 # Основное окно приложения
 class MainWindow(QMainWindow):
@@ -328,6 +534,10 @@ class MainWindow(QMainWindow):
         # Добавляем вкладку управления программами
         program_uninstaller = ProgramUninstallerWidget(self)
         self.tabs.addTab(program_uninstaller, "Управление программами")
+        
+        # Добавляем вкладку настроек
+        settings_widget = SettingsWidget(self)
+        self.tabs.addTab(settings_widget, "Параметры")
         
         main_layout.addWidget(self.tabs)
         
