@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 import threading
+import psutil
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QFileDialog, QSpinBox, QProgressBar,
@@ -12,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QComboBox, QStyle, QStyledItemDelegate, QAbstractItemView,
                              QTabWidget, QDialog, QTreeWidget, QTreeWidgetItem, QGroupBox,
                              QCheckBox, QSystemTrayIcon, QMenu, QAction)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QSettings
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QSettings, QEvent
 from PyQt5.QtGui import QIcon, QColor, QFont, QPalette, QBrush, QLinearGradient
 
 # Импортируем функции из main.py и C++ модуля
@@ -49,14 +50,95 @@ class CustomTrayIcon(QSystemTrayIcon):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setIcon(QIcon("icon1.ico"))
-        self.setToolTip("SkripClean - Мониторинг системы")
+        try:
+            # Пробуем загрузить иконку из разных мест
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon1.ico")
+            if os.path.exists(icon_path):
+                self.setIcon(QIcon(icon_path))
+            else:
+                # Пробуем загрузить из ресурсов
+                icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "icon1.ico")
+                if os.path.exists(icon_path):
+                    self.setIcon(QIcon(icon_path))
+                else:
+                    # Используем стандартную иконку как запасной вариант
+                    self.setIcon(QStyle.standardIcon(QStyle.SP_ComputerIcon))
+        except Exception as e:
+            print(f"Ошибка загрузки иконки: {e}")
+            self.setIcon(QStyle.standardIcon(QStyle.SP_ComputerIcon))
+            
+        self.setToolTip("SkripClean")
         
         # Создаем контекстное меню
-        self.menu = QMenu()
+        try:
+            self.menu = QMenu()
+            self.setContextMenu(self.menu)
+        except Exception as e:
+            print(f"Ошибка создания меню: {e}")
+    
+    def safe_update_tooltip(self):
+        """Безопасное обновление информации в всплывающей подсказке"""
+        try:
+            self.update_tooltip()
+        except Exception as e:
+            print(f"Ошибка обновления tooltip: {e}")
+            self.setToolTip("SkripClean - Мониторинг системы")
+    
+    def update_tooltip(self):
+        """Обновляет информацию в всплывающей подсказке"""
+        tooltip = "SkripClean - Мониторинг системы\n\n"
         
-        # Действия меню будут добавлены в main()
-        self.setContextMenu(self.menu)
+        try:
+            # Информация о дисках
+            disk_info = []
+            for disk in psutil.disk_partitions():
+                try:
+                    if disk.opts and 'fixed' in disk.opts:
+                        usage = psutil.disk_usage(disk.mountpoint)
+                        disk_info.append(
+                            f"Диск {disk.mountpoint}:\n"
+                            f"Занято: {usage.percent}%\n"
+                            f"Свободно: {self.format_size(usage.free)}\n"
+                        )
+                except Exception:
+                    continue
+            
+            if disk_info:
+                tooltip += "\n".join(disk_info) + "\n"
+            
+            # Информация о памяти
+            try:
+                memory = psutil.virtual_memory()
+                tooltip += "Память:\n"
+                tooltip += f"Использовано: {memory.percent}%\n"
+                tooltip += f"Свободно: {self.format_size(memory.available)}\n\n"
+            except Exception as e:
+                print(f"Ошибка получения информации о памяти: {e}")
+            
+            # Информация о CPU
+            try:
+                cpu_percent = psutil.cpu_percent(interval=None)  # Убираем interval для избежания блокировки
+                tooltip += f"CPU: {cpu_percent}%\n"
+            except Exception as e:
+                print(f"Ошибка получения информации о CPU: {e}")
+            
+        except Exception as e:
+            tooltip += f"\nОшибка получения информации о системе"
+            print(f"Общая ошибка обновления информации: {e}")
+        
+        self.setToolTip(tooltip)
+    
+    @staticmethod
+    def format_size(size):
+        """Форматирует размер в байтах в человекочитаемый вид"""
+        try:
+            for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
+                if size < 1024:
+                    return f"{size:.1f} {unit}"
+                size /= 1024
+            return f"{size:.1f} ПБ"
+        except Exception:
+            return "Н/Д"
 
 # Класс для выполнения сканирования в отдельном потоке
 class ScanWorker(QThread):
@@ -269,6 +351,45 @@ class SettingsWidget(QWidget):
         cleanup_group.setLayout(cleanup_layout)
         layout.addWidget(cleanup_group)
         
+        # Группа настроек уведомлений
+        notifications_group = QGroupBox("Настройки уведомлений")
+        notifications_layout = QVBoxLayout()
+        
+        # Общее включение/выключение уведомлений
+        self.notifications_check = QCheckBox("Показывать уведомления")
+        notifications_layout.addWidget(self.notifications_check)
+        
+        # Подгруппа типов уведомлений
+        notifications_types_group = QGroupBox("Типы уведомлений")
+        notifications_types_layout = QVBoxLayout()
+        
+        self.notify_start_check = QCheckBox("Уведомлять о начале операций")
+        self.notify_complete_check = QCheckBox("Уведомлять о завершении операций")
+        self.notify_errors_check = QCheckBox("Уведомлять об ошибках")
+        self.notify_tray_check = QCheckBox("Уведомлять при сворачивании в трей")
+        
+        notifications_types_layout.addWidget(self.notify_start_check)
+        notifications_types_layout.addWidget(self.notify_complete_check)
+        notifications_types_layout.addWidget(self.notify_errors_check)
+        notifications_types_layout.addWidget(self.notify_tray_check)
+        
+        notifications_types_group.setLayout(notifications_types_layout)
+        notifications_layout.addWidget(notifications_types_group)
+        
+        # Длительность уведомлений
+        duration_layout = QHBoxLayout()
+        duration_layout.addWidget(QLabel("Длительность уведомлений:"))
+        self.notification_duration_spin = QSpinBox()
+        self.notification_duration_spin.setRange(1, 10)
+        self.notification_duration_spin.setValue(5)
+        self.notification_duration_spin.setSuffix(" сек")
+        duration_layout.addWidget(self.notification_duration_spin)
+        duration_layout.addStretch()
+        notifications_layout.addLayout(duration_layout)
+        
+        notifications_group.setLayout(notifications_layout)
+        layout.addWidget(notifications_group)
+        
         # Кнопки
         buttons_layout = QHBoxLayout()
         
@@ -288,6 +409,18 @@ class SettingsWidget(QWidget):
         hint_label.setStyleSheet("color: gray; font-style: italic;")
         layout.addWidget(hint_label)
         
+        # Подключаем обработчик изменения состояния главного чекбокса уведомлений
+        self.notifications_check.stateChanged.connect(self.toggle_notification_settings)
+        
+    def toggle_notification_settings(self, state):
+        """Включает/выключает доступность настроек уведомлений"""
+        enabled = bool(state)
+        self.notify_start_check.setEnabled(enabled)
+        self.notify_complete_check.setEnabled(enabled)
+        self.notify_errors_check.setEnabled(enabled)
+        self.notify_tray_check.setEnabled(enabled)
+        self.notification_duration_spin.setEnabled(enabled)
+    
     def load_settings(self):
         """Загружает настройки из файла конфигурации"""
         settings = QSettings("SkripClean", "Settings")
@@ -295,7 +428,7 @@ class SettingsWidget(QWidget):
         # Загружаем общие настройки
         self.autostart_check.setChecked(settings.value("autostart", False, type=bool))
         self.minimize_to_tray_check.setChecked(settings.value("minimize_to_tray", True, type=bool))
-        self.notifications_check.setChecked(settings.value("notifications", True, type=bool))
+        self.notifications_check.setChecked(settings.value("notifications_enabled", True, type=bool))
         
         # Загружаем настройки мониторинга
         self.check_interval_spin.setValue(settings.value("check_interval", 5, type=int))
@@ -306,6 +439,16 @@ class SettingsWidget(QWidget):
         self.auto_cleanup_check.setChecked(settings.value("auto_cleanup", False, type=bool))
         self.confirm_deletion_check.setChecked(settings.value("confirm_deletion", True, type=bool))
         
+        # Загружаем настройки уведомлений
+        self.notify_start_check.setChecked(settings.value("notify_start", True, type=bool))
+        self.notify_complete_check.setChecked(settings.value("notify_complete", True, type=bool))
+        self.notify_errors_check.setChecked(settings.value("notify_errors", True, type=bool))
+        self.notify_tray_check.setChecked(settings.value("notify_tray", True, type=bool))
+        self.notification_duration_spin.setValue(settings.value("notification_duration", 5, type=int))
+        
+        # Обновляем доступность настроек уведомлений
+        self.toggle_notification_settings(self.notifications_check.isChecked())
+        
     def save_settings(self):
         """Сохраняет настройки в файл конфигурации"""
         settings = QSettings("SkripClean", "Settings")
@@ -313,7 +456,7 @@ class SettingsWidget(QWidget):
         # Сохраняем общие настройки
         settings.setValue("autostart", self.autostart_check.isChecked())
         settings.setValue("minimize_to_tray", self.minimize_to_tray_check.isChecked())
-        settings.setValue("notifications", self.notifications_check.isChecked())
+        settings.setValue("notifications_enabled", self.notifications_check.isChecked())
         
         # Сохраняем настройки мониторинга
         settings.setValue("check_interval", self.check_interval_spin.value())
@@ -323,6 +466,13 @@ class SettingsWidget(QWidget):
         # Сохраняем настройки очистки
         settings.setValue("auto_cleanup", self.auto_cleanup_check.isChecked())
         settings.setValue("confirm_deletion", self.confirm_deletion_check.isChecked())
+        
+        # Сохраняем настройки уведомлений
+        settings.setValue("notify_start", self.notify_start_check.isChecked())
+        settings.setValue("notify_complete", self.notify_complete_check.isChecked())
+        settings.setValue("notify_errors", self.notify_errors_check.isChecked())
+        settings.setValue("notify_tray", self.notify_tray_check.isChecked())
+        settings.setValue("notification_duration", self.notification_duration_spin.value())
         
         # Применяем настройки автозапуска
         self.apply_autostart_settings()
@@ -354,6 +504,9 @@ class SettingsWidget(QWidget):
             self.auto_cleanup_check.setChecked(False)
             self.confirm_deletion_check.setChecked(True)
             
+            # Сбрасываем настройки уведомлений
+            self.notify_start_check.setChecked(True)
+            self.notify_complete_check.setChecked(True)
             # Сохраняем сброшенные настройки
             self.save_settings()
             
@@ -382,6 +535,146 @@ class SettingsWidget(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось изменить настройки автозапуска: {str(e)}")
 
+class SystemInfoWidget(QWidget):
+    """Виджет для отображения системной информации"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.init_ui()
+        
+        # Запускаем таймер обновления
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.update_info)
+        self.update_timer.start(2000)  # Обновление каждые 2 секунды
+        
+        # Первое обновление
+        self.update_info()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        
+        # Группа информации о дисках
+        disk_group = QGroupBox("Диски")
+        disk_layout = QVBoxLayout()
+        self.disk_labels = {}
+        for disk in self.get_fixed_disks():
+            disk_info = QLabel()
+            disk_info.setStyleSheet("QLabel { padding: 5px; }")
+            disk_layout.addWidget(disk_info)
+            self.disk_labels[disk] = disk_info
+        disk_group.setLayout(disk_layout)
+        layout.addWidget(disk_group)
+        
+        # Группа информации о памяти
+        memory_group = QGroupBox("Память")
+        memory_layout = QVBoxLayout()
+        self.ram_bar = QProgressBar()
+        self.ram_bar.setFormat("RAM: %p% (Использовано: %v ГБ / Всего: %m ГБ)")
+        memory_layout.addWidget(self.ram_bar)
+        memory_group.setLayout(memory_layout)
+        layout.addWidget(memory_group)
+        
+        # Группа информации о CPU
+        cpu_group = QGroupBox("Процессор")
+        cpu_layout = QVBoxLayout()
+        self.cpu_bar = QProgressBar()
+        self.cpu_bar.setFormat("Загрузка CPU: %p%")
+        cpu_layout.addWidget(self.cpu_bar)
+        
+        # Добавляем информацию о температуре, если доступно
+        try:
+            import wmi
+            self.wmi = wmi.WMI(namespace="root\\OpenHardwareMonitor")
+            self.temp_label = QLabel()
+            cpu_layout.addWidget(self.temp_label)
+        except:
+            self.wmi = None
+            self.temp_label = None
+        
+        cpu_group.setLayout(cpu_layout)
+        layout.addWidget(cpu_group)
+        
+        layout.addStretch()
+    
+    def get_fixed_disks(self):
+        """Получает список фиксированных дисков"""
+        return [disk.mountpoint for disk in psutil.disk_partitions() 
+                if disk.opts and 'fixed' in disk.opts]
+    
+    def format_size(self, size):
+        """Форматирует размер в байтах в человекочитаемый вид"""
+        try:
+            for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
+                if size < 1024:
+                    return f"{size:.1f} {unit}"
+                size /= 1024
+            return f"{size:.1f} ПБ"
+        except:
+            return "Н/Д"
+    
+    def update_info(self):
+        """Обновляет информацию о системе"""
+        try:
+            # Обновляем информацию о дисках
+            for disk in self.get_fixed_disks():
+                try:
+                    usage = psutil.disk_usage(disk)
+                    text = (f"Диск {disk}:\n"
+                           f"Занято: {usage.percent}%\n"
+                           f"Свободно: {self.format_size(usage.free)}")
+                    self.disk_labels[disk].setText(text)
+                    
+                    # Устанавливаем цвет в зависимости от заполненности
+                    if usage.percent > 90:
+                        color = "background-color: rgba(255, 0, 0, 0.1)"
+                    elif usage.percent > 75:
+                        color = "background-color: rgba(255, 165, 0, 0.1)"
+                    else:
+                        color = "background-color: rgba(0, 255, 0, 0.1)"
+                    self.disk_labels[disk].setStyleSheet(f"QLabel {{ padding: 5px; {color}; }}")
+                except:
+                    continue
+            
+            # Обновляем информацию о памяти
+            memory = psutil.virtual_memory()
+            self.ram_bar.setMaximum(int(memory.total / (1024*1024*1024)))
+            self.ram_bar.setValue(int(memory.used / (1024*1024*1024)))
+            
+            # Устанавливаем цвет в зависимости от использования
+            if memory.percent > 90:
+                self.ram_bar.setStyleSheet("QProgressBar::chunk { background-color: red; }")
+            elif memory.percent > 75:
+                self.ram_bar.setStyleSheet("QProgressBar::chunk { background-color: orange; }")
+            else:
+                self.ram_bar.setStyleSheet("QProgressBar::chunk { background-color: green; }")
+            
+            # Обновляем информацию о CPU
+            cpu_percent = psutil.cpu_percent()
+            self.cpu_bar.setValue(int(cpu_percent))
+            
+            # Устанавливаем цвет в зависимости от загрузки
+            if cpu_percent > 90:
+                self.cpu_bar.setStyleSheet("QProgressBar::chunk { background-color: red; }")
+            elif cpu_percent > 75:
+                self.cpu_bar.setStyleSheet("QProgressBar::chunk { background-color: orange; }")
+            else:
+                self.cpu_bar.setStyleSheet("QProgressBar::chunk { background-color: green; }")
+            
+            # Обновляем информацию о температуре, если доступно
+            if self.wmi and self.temp_label:
+                try:
+                    temperature_infos = self.wmi.Sensor()
+                    cpu_temps = [sensor.Value for sensor in temperature_infos 
+                               if sensor.SensorType == 'Temperature' and 'CPU' in sensor.Name]
+                    if cpu_temps:
+                        avg_temp = sum(cpu_temps) / len(cpu_temps)
+                        self.temp_label.setText(f"Температура CPU: {avg_temp:.1f}°C")
+                except:
+                    self.temp_label.setText("Температура CPU: Н/Д")
+        except Exception as e:
+            print(f"Ошибка обновления системной информации: {e}")
+
 # Основное окно приложения
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -390,8 +683,31 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(800, 600)
         
         # Загружаем настройки
-        self.settings = QSettings("SkripClean", "Settings")
-        self.minimize_to_tray = self.settings.value("minimize_to_tray", True, type=bool)
+        try:
+            self.settings = QSettings("SkripClean", "Settings")
+            self.minimize_to_tray = self.settings.value("minimize_to_tray", True, type=bool)
+        except Exception as e:
+            print(f"Ошибка загрузки настроек: {e}")
+            self.minimize_to_tray = True
+        
+        # Устанавливаем иконку приложения
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon1.ico")
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+            else:
+                # Пробуем загрузить из ресурсов
+                icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "icon1.ico")
+                if os.path.exists(icon_path):
+                    self.setWindowIcon(QIcon(icon_path))
+        except Exception as e:
+            print(f"Ошибка установки иконки окна: {e}")
+        
+        # Добавляем обработку сворачивания окна
+        try:
+            self.setWindowFlags(self.windowFlags())
+        except Exception as e:
+            print(f"Ошибка установки флагов окна: {e}")
         
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_COLOR}; }}
@@ -566,6 +882,10 @@ class MainWindow(QMainWindow):
         # Добавляем вкладку настроек
         settings_widget = SettingsWidget(self)
         self.tabs.addTab(settings_widget, "Параметры")
+        
+        # Добавляем вкладку системной информации
+        system_info = SystemInfoWidget(self)
+        self.tabs.addTab(system_info, "Система")
         
         main_layout.addWidget(self.tabs)
         
@@ -860,6 +1180,18 @@ class MainWindow(QMainWindow):
         self.cleanup_progress.setValue(0)
         self.cleanup_progress.setFormat("Анализ системы...")
         
+        # Показываем уведомление о начале анализа
+        try:
+            if global_tray_icon and global_tray_icon.isVisible():
+                global_tray_icon.showMessage(
+                    "SkripClean",
+                    "Начат анализ системы...",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
+        except Exception as e:
+            print(f"Ошибка показа уведомления: {e}")
+        
         # Запускаем анализ в отдельном потоке
         self.cleaner_thread = CleanerThread()
         self.cleaner_thread.progress_updated.connect(self.update_cleanup_results)
@@ -882,6 +1214,18 @@ class MainWindow(QMainWindow):
             self.cleanup_progress.setValue(0)
             self.cleanup_progress.setFormat("Выполняется очистка...")
             
+            # Показываем уведомление о начале очистки
+            try:
+                if global_tray_icon and global_tray_icon.isVisible():
+                    global_tray_icon.showMessage(
+                        "SkripClean",
+                        "Начата очистка системы...",
+                        QSystemTrayIcon.Information,
+                        2000
+                    )
+            except Exception as e:
+                print(f"Ошибка показа уведомления: {e}")
+            
             # Запускаем очистку в отдельном потоке
             self.cleaner_thread = CleanerThread()
             self.cleaner_thread.progress_updated.connect(self.update_cleanup_results)
@@ -895,6 +1239,28 @@ class MainWindow(QMainWindow):
         self.cleanup_progress.setRange(0, 100)
         self.cleanup_progress.setValue(100)
         self.cleanup_progress.setFormat("Анализ завершен")
+        
+        # Получаем итоговые результаты анализа
+        total_size = "0 Б"
+        total_files = "0"
+        for i in range(self.cleanup_tree.topLevelItemCount()):
+            item = self.cleanup_tree.topLevelItem(i)
+            if item.text(0) == "ИТОГО":
+                total_size = item.text(1)
+                total_files = item.text(2)
+                break
+        
+        # Показываем уведомление с результатами анализа
+        try:
+            if global_tray_icon and global_tray_icon.isVisible():
+                global_tray_icon.showMessage(
+                    "SkripClean - Анализ завершен",
+                    f"Найдено: {total_size}\nФайлов: {total_files}",
+                    QSystemTrayIcon.Information,
+                    5000  # Показываем на 5 секунд
+                )
+        except Exception as e:
+            print(f"Ошибка показа уведомления: {e}")
 
     def update_cleanup_results(self, results):
         """Обновляет результаты в дереве"""
@@ -931,86 +1297,166 @@ class MainWindow(QMainWindow):
         self.cleanup_progress.setRange(0, 100)
         self.cleanup_progress.setValue(100)
         self.cleanup_progress.setFormat("Очистка завершена")
+        
+        # Получаем итоговые результаты очистки
+        total_size = 0
+        total_files = 0
+        for i in range(self.cleanup_tree.topLevelItemCount()):
+            item = self.cleanup_tree.topLevelItem(i)
+            if item.text(0) == "ИТОГО":
+                size_text = item.text(1)
+                files_count = item.text(2)
+                break
+        
+        # Показываем уведомление с результатами
+        try:
+            if global_tray_icon and global_tray_icon.isVisible():
+                global_tray_icon.showMessage(
+                    "SkripClean - Очистка завершена",
+                    f"Очищено: {size_text}\nУдалено файлов: {files_count}",
+                    QSystemTrayIcon.Information,
+                    5000  # Показываем на 5 секунд
+                )
+        except Exception as e:
+            print(f"Ошибка показа уведомления: {e}")
+
+    def changeEvent(self, event):
+        """Обработка изменения состояния окна"""
+        try:
+            if event.type() == QEvent.WindowStateChange:
+                if self.windowState() & Qt.WindowMinimized:
+                    if self.minimize_to_tray and global_tray_icon and global_tray_icon.isVisible():
+                        QTimer.singleShot(0, self.hide)
+                        try:
+                            global_tray_icon.showMessage(
+                                "SkripClean",
+                                "Программа свернута в трей",
+                                QSystemTrayIcon.Information,
+                                2000
+                            )
+                        except Exception as e:
+                            print(f"Ошибка показа уведомления: {e}")
+        except Exception as e:
+            print(f"Ошибка обработки события окна: {e}")
+        
+        super().changeEvent(event)
 
     def closeEvent(self, event):
         """Обработка закрытия окна"""
-        if self.minimize_to_tray and global_tray_icon and global_tray_icon.isVisible():
-            event.ignore()
-            self.hide()
-            global_tray_icon.showMessage(
-                "SkripClean",
-                "Программа продолжает работать в трее",
-                QSystemTrayIcon.Information,
-                2000
-            )
-        else:
-            reply = QMessageBox.question(
-                self,
-                'Подтверждение',
-                'Вы уверены, что хотите закрыть программу?',
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                # Сохраняем настройки перед закрытием
-                self.settings.sync()
-                event.accept()
-                # Закрываем иконку в трее
-                if global_tray_icon:
-                    global_tray_icon.hide()
-                QApplication.quit()
-            else:
+        try:
+            if self.minimize_to_tray and global_tray_icon and global_tray_icon.isVisible():
                 event.ignore()
+                self.hide()
+                try:
+                    global_tray_icon.showMessage(
+                        "SkripClean",
+                        "Программа продолжает работать в трее",
+                        QSystemTrayIcon.Information,
+                        2000
+                    )
+                except Exception as e:
+                    print(f"Ошибка показа уведомления: {e}")
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    'Подтверждение',
+                    'Вы уверены, что хотите закрыть программу?',
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    try:
+                        self.settings.sync()
+                        if global_tray_icon:
+                            global_tray_icon.hide()
+                        event.accept()
+                        QApplication.quit()
+                    except Exception as e:
+                        print(f"Ошибка при закрытии программы: {e}")
+                        event.accept()
+                else:
+                    event.ignore()
+        except Exception as e:
+            print(f"Ошибка обработки закрытия окна: {e}")
+            event.accept()
 
 # Запуск приложения
 def main():
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Используем стиль Fusion для более современного вида
-    
-    # Показываем диалог с отказом от ответственности
-    disclaimer = DisclaimerDialog()
-    if disclaimer.exec_() != QDialog.Accepted:
-        sys.exit(0)
-    
-    # Устанавливаем иконку приложения
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon1.ico")
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
-    
-    # Создаем иконку в трее и сохраняем ссылку на нее
-    global global_tray_icon
-    global_tray_icon = CustomTrayIcon()
-    
-    window = MainWindow()
-    
-    # Добавляем действия в меню трея
-    show_action = QAction("Показать", global_tray_icon)
-    show_action.triggered.connect(window.show)
-    global_tray_icon.menu.addAction(show_action)
-    
-    settings_action = QAction("Параметры", global_tray_icon)
-    settings_action.triggered.connect(lambda: window.show() and window.tabs.setCurrentIndex(4))  # Индекс вкладки параметров
-    global_tray_icon.menu.addAction(settings_action)
-    
-    global_tray_icon.menu.addSeparator()
-    
-    exit_action = QAction("Выход", global_tray_icon)
-    exit_action.triggered.connect(app.quit)
-    global_tray_icon.menu.addAction(exit_action)
-    
-    # Показываем окно и иконку в трее
-    window.show()
-    global_tray_icon.show()
-    
-    # Добавляем обработку двойного клика по иконке в трее
-    def tray_icon_activated(reason):
-        if reason == QSystemTrayIcon.DoubleClick:
-            window.show()
-            window.activateWindow()
-    
-    global_tray_icon.activated.connect(tray_icon_activated)
-    
-    sys.exit(app.exec_())
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle('Fusion')
+        
+        # Проверяем поддержку системного трея
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QMessageBox.critical(None, "SkripClean",
+                               "Системный трей не доступен в вашей системе!")
+            return 1
+        
+        # Отключаем автоматическое закрытие приложения при закрытии последнего окна
+        app.setQuitOnLastWindowClosed(False)
+        
+        # Показываем диалог с отказом от ответственности
+        disclaimer = DisclaimerDialog()
+        if disclaimer.exec_() != QDialog.Accepted:
+            return 0
+        
+        # Создаем иконку в трее и сохраняем ссылку на нее
+        global global_tray_icon
+        global_tray_icon = CustomTrayIcon()
+        
+        window = MainWindow()
+        
+        try:
+            # Добавляем действия в меню трея
+            show_action = QAction("Показать", global_tray_icon)
+            show_action.triggered.connect(lambda: (
+                window.show(),
+                window.setWindowState(window.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+            ))
+            global_tray_icon.menu.addAction(show_action)
+            
+            settings_action = QAction("Параметры", global_tray_icon)
+            settings_action.triggered.connect(lambda: (
+                window.show(),
+                window.setWindowState(window.windowState() & ~Qt.WindowMinimized | Qt.WindowActive),
+                window.tabs.setCurrentIndex(4)
+            ))
+            global_tray_icon.menu.addAction(settings_action)
+            
+            global_tray_icon.menu.addSeparator()
+            
+            exit_action = QAction("Выход", global_tray_icon)
+            exit_action.triggered.connect(app.quit)
+            global_tray_icon.menu.addAction(exit_action)
+        except Exception as e:
+            print(f"Ошибка создания меню трея: {e}")
+        
+        # Показываем окно и иконку в трее
+        window.show()
+        global_tray_icon.show()
+        
+        # Добавляем обработку двойного клика по иконке в трее
+        def tray_icon_activated(reason):
+            try:
+                if reason == QSystemTrayIcon.DoubleClick:
+                    if window.isHidden():
+                        window.show()
+                        window.setWindowState(window.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+                    else:
+                        window.hide()
+            except Exception as e:
+                print(f"Ошибка обработки клика по трею: {e}")
+        
+        global_tray_icon.activated.connect(tray_icon_activated)
+        
+        return app.exec_()
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print(f"Необработанная ошибка: {e}")
+        sys.exit(1)
