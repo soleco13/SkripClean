@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
                              QComboBox, QStyle, QStyledItemDelegate, QAbstractItemView,
                              QTabWidget, QDialog, QTreeWidget, QTreeWidgetItem, QGroupBox,
-                             QCheckBox, QSystemTrayIcon, QMenu, QAction)
+                             QCheckBox, QSystemTrayIcon, QMenu, QAction, QLineEdit)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QSettings, QEvent
 from PyQt5.QtGui import QIcon, QColor, QFont, QPalette, QBrush, QLinearGradient
 
@@ -27,7 +27,7 @@ from path_cache import PathCache
 from autorun_manager import AutorunManager
 # Импортируем диалог отказа от ответственности
 from disclaimer_dialog import DisclaimerDialog
-from system_cleaner import SystemCleaner
+from system_cleaner import SystemCleaner, CleaningMode
 # Импортируем модуль управления программами
 from program_uninstaller import ProgramUninstallerWidget
 
@@ -245,10 +245,19 @@ class ColorDelegate(QStyledItemDelegate):
 class CleanerThread(QThread):
     progress_updated = pyqtSignal(dict)
     finished = pyqtSignal()
-
+    
+    def __init__(self, preview_mode=True, selected_items=None, cleaning_mode=CleaningMode.STANDARD):
+        super().__init__()
+        self.preview_mode = preview_mode
+        self.selected_items = selected_items or []
+        self.cleaning_mode = cleaning_mode
+        
     def run(self):
-        cleaner = SystemCleaner()
-        results = cleaner.clean_system()
+        cleaner = SystemCleaner(mode=self.cleaning_mode)
+        if self.preview_mode:
+            results = cleaner.get_cleaning_preview()
+        else:
+            results = cleaner.clean_system(selected_categories=self.selected_items)
         self.progress_updated.emit(results)
         self.finished.emit()
 
@@ -1044,69 +1053,103 @@ class MainWindow(QMainWindow):
         beta_label.setStyleSheet(f"font-size: 12px; color: {TEXT_COLOR}; font-style: italic; margin-bottom: 10px;")
         layout.addWidget(beta_label)
 
-
         # Создаем разделенный интерфейс: слева фильтры, справа результаты
         splitter = QHBoxLayout()
         
-        # Левая панель с фильтрами
+        # Левая панель с фильтрами и настройками
         filters_widget = QWidget()
         filters_layout = QVBoxLayout(filters_widget)
-        
-        # Группы фильтров
-        self.filter_groups = {
-            "Windows": {
-                "Корзина": True,
-                "Временные файлы Windows": True,
-                "Журнал Windows": True,
-                "Буфер обмена": True,
-                "Память дампов": True,
-                "Журналы ошибок": True,
-                "Кэш DNS": True,
-                "Недавние документы": True
-            },
-            "Браузеры": {
-                "Microsoft Edge - Интернет-кэш": True,
-                "Microsoft Edge - Журнал посещений": True,
-                "Microsoft Edge - Cookie-файлы": True,
-                "Microsoft Edge - История загрузок": True,
-                "Microsoft Edge - Сеанс": True,
-                "Internet Explorer - Временные файлы": True,
-                "Internet Explorer - Журнал посещений": True,
-                "Internet Explorer - Cookie-файлы": True
-            },
-            "Приложения": {
-                "Проводник Windows - Недавние документы": True,
-                "Проводник Windows - Эскизы": True,
-                "Проводник Windows - Кэш": True,
-                "Microsoft Office - Временные файлы": True,
-                "Microsoft Office - Автовосстановление": True
-            }
+
+        # Группа выбора режима очистки
+        mode_group = QGroupBox("Режим очистки")
+        mode_layout = QVBoxLayout()
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Безопасный", "Стандартный", "Агрессивный"])
+        self.mode_combo.setCurrentText("Стандартный")
+        mode_layout.addWidget(self.mode_combo)
+
+        # Описание режимов
+        mode_desc = QLabel(
+            "Безопасный: Только временные файлы старше 7 дней\n"
+            "Стандартный: Временные файлы, кэш, логи\n"
+            "Агрессивный: Максимальная очистка, включая историю"
+        )
+        mode_desc.setWordWrap(True)
+        mode_desc.setStyleSheet("font-size: 11px; color: gray;")
+        mode_layout.addWidget(mode_desc)
+
+        mode_group.setLayout(mode_layout)
+        filters_layout.addWidget(mode_group)
+
+        # Группа фильтров поиска
+        search_group = QGroupBox("Фильтры поиска")
+        search_layout = QVBoxLayout()
+
+        # Поиск по имени
+        search_name_layout = QHBoxLayout()
+        search_name_layout.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Введите текст для поиска...")
+        self.search_edit.textChanged.connect(self.apply_filters)
+        search_name_layout.addWidget(self.search_edit)
+        search_layout.addLayout(search_name_layout)
+
+        # Дополнительные фильтры
+        self.filter_options = {
+            'min_size': QSpinBox(),
+            'max_size': QSpinBox(),
+            'min_age': QSpinBox(),
+            'extension': QLineEdit(),
+            'exclude_path': QLineEdit()
         }
 
-        # Создаем виджеты для каждой группы фильтров
-        for group_name, filters in self.filter_groups.items():
-            group_box = QGroupBox(group_name)
-            group_layout = QVBoxLayout()
-            
-            # Кнопка "Выбрать все" для группы
-            select_all_btn = QPushButton("Выбрать все")
-            select_all_btn.setCheckable(True)
-            select_all_btn.setChecked(True)
-            select_all_btn.clicked.connect(lambda checked, g=group_name: self.toggle_group(g, checked))
-            group_layout.addWidget(select_all_btn)
-            
-            # Добавляем чекбоксы для каждого фильтра
-            for filter_name in filters:
-                checkbox = QCheckBox(filter_name)
-                checkbox.setChecked(True)
-                group_layout.addWidget(checkbox)
-                
-            group_box.setLayout(group_layout)
-            filters_layout.addWidget(group_box)
-        
-        # Добавляем растягивающийся спейсер в конец
-        filters_layout.addStretch()
-        
+        # Размер файла
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Размер (МБ):"))
+        self.filter_options['min_size'].setRange(0, 100000)
+        self.filter_options['min_size'].valueChanged.connect(self.apply_filters)
+        size_layout.addWidget(self.filter_options['min_size'])
+        size_layout.addWidget(QLabel("до"))
+        self.filter_options['max_size'].setRange(0, 100000)
+        self.filter_options['max_size'].valueChanged.connect(self.apply_filters)
+        size_layout.addWidget(self.filter_options['max_size'])
+        search_layout.addLayout(size_layout)
+
+        # Возраст файла
+        age_layout = QHBoxLayout()
+        age_layout.addWidget(QLabel("Старше (дней):"))
+        self.filter_options['min_age'].setRange(0, 365)
+        self.filter_options['min_age'].valueChanged.connect(self.apply_filters)
+        age_layout.addWidget(self.filter_options['min_age'])
+        search_layout.addLayout(age_layout)
+
+        # Расширение файла
+        ext_layout = QHBoxLayout()
+        ext_layout.addWidget(QLabel("Расширение:"))
+        self.filter_options['extension'].setPlaceholderText(".tmp, .log, ...")
+        self.filter_options['extension'].textChanged.connect(self.apply_filters)
+        ext_layout.addWidget(self.filter_options['extension'])
+        search_layout.addLayout(ext_layout)
+
+        # Исключить путь
+        exclude_layout = QHBoxLayout()
+        exclude_layout.addWidget(QLabel("Исключить:"))
+        self.filter_options['exclude_path'].setPlaceholderText("Путь для исключения...")
+        self.filter_options['exclude_path'].textChanged.connect(self.apply_filters)
+        exclude_layout.addWidget(self.filter_options['exclude_path'])
+        search_layout.addLayout(exclude_layout)
+
+        # Кнопки сброса фильтров
+        filter_buttons = QHBoxLayout()
+        reset_button = QPushButton("Сбросить фильтры")
+        reset_button.clicked.connect(self.reset_filters)
+        filter_buttons.addWidget(reset_button)
+        search_layout.addLayout(filter_buttons)
+
+        search_group.setLayout(search_layout)
+        filters_layout.addWidget(search_group)
+
         # Правая панель с результатами
         results_widget = QWidget()
         results_layout = QVBoxLayout(results_widget)
@@ -1116,11 +1159,13 @@ class MainWindow(QMainWindow):
         results_header.setStyleSheet("font-weight: bold; font-size: 14px;")
         results_layout.addWidget(results_header)
         
-        # Дерево результатов
+        # Дерево результатов с чекбоксами
         self.cleanup_tree = QTreeWidget()
-        self.cleanup_tree.setHeaderLabels(["Элемент", "Размер", "Количество"])
-        self.cleanup_tree.setColumnWidth(0, 300)
-        self.cleanup_tree.setColumnWidth(1, 100)
+        self.cleanup_tree.setHeaderLabels(["", "Элемент", "Размер", "Количество"])
+        self.cleanup_tree.setColumnWidth(0, 30)  # Ширина колонки с чекбоксами
+        self.cleanup_tree.setColumnWidth(1, 300)
+        self.cleanup_tree.setColumnWidth(2, 100)
+        self.cleanup_tree.itemChanged.connect(self.on_cleanup_item_changed)
         results_layout.addWidget(self.cleanup_tree)
         
         # Прогресс бар
@@ -1146,7 +1191,7 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.cleanup_button)
         
         results_layout.addLayout(buttons_layout)
-        
+
         # Добавляем панели в сплиттер
         splitter.addWidget(filters_widget)
         splitter.addWidget(results_widget)
@@ -1158,20 +1203,63 @@ class MainWindow(QMainWindow):
         layout.addLayout(splitter)
         self.system_cleaner_tab.setLayout(layout)
 
-    def toggle_group(self, group_name: str, checked: bool):
-        """Включает или выключает все фильтры в группе"""
-        group_box = None
-        for i in range(self.system_cleaner_tab.layout().count()):
-            widget = self.system_cleaner_tab.layout().itemAt(i).widget()
-            if isinstance(widget, QGroupBox) and widget.title() == group_name:
-                group_box = widget
-                break
+    def apply_filters(self):
+        """Применяет фильтры к результатам"""
+        search_text = self.search_edit.text().lower()
+        min_size = self.filter_options['min_size'].value() * 1024 * 1024  # МБ в байты
+        max_size = self.filter_options['max_size'].value() * 1024 * 1024 if self.filter_options['max_size'].value() > 0 else float('inf')
+        min_age = self.filter_options['min_age'].value()
+        extensions = [ext.strip() for ext in self.filter_options['exclude_path'].text().split(',') if ext.strip()]
+        exclude_path = self.filter_options['exclude_path'].text().lower()
+
+        root = self.cleanup_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            category_item = root.child(i)
+            if category_item.text(1) == "ИТОГО":
+                continue
+
+            # Показываем/скрываем категории и их элементы
+            show_category = False
+            for j in range(category_item.childCount()):
+                child = category_item.child(j)
+                path = child.text(1)
+                size_text = child.text(2)
                 
-        if group_box:
-            for i in range(group_box.layout().count()):
-                widget = group_box.layout().itemAt(i).widget()
-                if isinstance(widget, QCheckBox):
-                    widget.setChecked(checked)
+                # Конвертируем размер из текста в байты
+                size = self.parse_size(size_text)
+                
+                # Проверяем все условия фильтрации
+                matches = (
+                    (not search_text or search_text in path.lower()) and
+                    (size >= min_size and size <= max_size) and
+                    (not extensions or any(path.lower().endswith(ext.lower()) for ext in extensions)) and
+                    (not exclude_path or exclude_path not in path.lower())
+                )
+
+                child.setHidden(not matches)
+                if matches:
+                    show_category = True
+
+            category_item.setHidden(not show_category)
+
+    def parse_size(self, size_text: str) -> int:
+        """Преобразует текстовое представление размера в байты"""
+        try:
+            number = float(size_text.split()[0])
+            unit = size_text.split()[1].upper()
+            multipliers = {'B': 1, 'KB': 1024, 'MB': 1024*1024, 'GB': 1024*1024*1024, 'TB': 1024*1024*1024*1024}
+            return int(number * multipliers.get(unit, 1))
+        except:
+            return 0
+
+    def reset_filters(self):
+        """Сбрасывает все фильтры на значения по умолчанию"""
+        self.search_edit.clear()
+        for option in self.filter_options.values():
+            if isinstance(option, QSpinBox):
+                option.setValue(0)
+            elif isinstance(option, QLineEdit):
+                option.clear()
 
     def analyze_system(self):
         """Запускает анализ системы"""
@@ -1180,12 +1268,20 @@ class MainWindow(QMainWindow):
         self.cleanup_progress.setValue(0)
         self.cleanup_progress.setFormat("Анализ системы...")
         
+        # Получаем выбранный режим очистки
+        mode_map = {
+            "Безопасный": CleaningMode.SAFE,
+            "Стандартный": CleaningMode.STANDARD,
+            "Агрессивный": CleaningMode.AGGRESSIVE
+        }
+        selected_mode = mode_map[self.mode_combo.currentText()]
+        
         # Показываем уведомление о начале анализа
         try:
             if global_tray_icon and global_tray_icon.isVisible():
                 global_tray_icon.showMessage(
                     "SkripClean",
-                    "Начат анализ системы...",
+                    f"Начат анализ системы в режиме {self.mode_combo.currentText()}...",
                     QSystemTrayIcon.Information,
                     2000
                 )
@@ -1193,17 +1289,38 @@ class MainWindow(QMainWindow):
             print(f"Ошибка показа уведомления: {e}")
         
         # Запускаем анализ в отдельном потоке
-        self.cleaner_thread = CleanerThread()
+        self.cleaner_thread = CleanerThread(preview_mode=True, cleaning_mode=selected_mode)
         self.cleaner_thread.progress_updated.connect(self.update_cleanup_results)
         self.cleaner_thread.finished.connect(self.analysis_finished)
         self.cleaner_thread.start()
 
     def start_cleanup(self):
         """Запускает процесс очистки системы"""
+        # Собираем выбранные элементы
+        selected_items = []
+        root = self.cleanup_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            category_item = root.child(i)
+            if category_item.text(1) != "ИТОГО" and category_item.checkState(0) == Qt.Checked:
+                selected_items.append(category_item.text(1))
+        
+        if not selected_items:
+            QMessageBox.warning(self, "Предупреждение", "Не выбраны элементы для очистки")
+            return
+        
+        # Получаем выбранный режим очистки
+        mode_map = {
+            "Безопасный": CleaningMode.SAFE,
+            "Стандартный": CleaningMode.STANDARD,
+            "Агрессивный": CleaningMode.AGGRESSIVE
+        }
+        selected_mode = mode_map[self.mode_combo.currentText()]
+        
         reply = QMessageBox.question(
             self,
             'Подтверждение',
-            'Вы уверены, что хотите начать очистку? Этот процесс нельзя отменить.',
+            f'Вы уверены, что хотите начать очистку выбранных элементов в режиме {self.mode_combo.currentText()}?\n'
+            'Этот процесс нельзя отменить.',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -1219,7 +1336,7 @@ class MainWindow(QMainWindow):
                 if global_tray_icon and global_tray_icon.isVisible():
                     global_tray_icon.showMessage(
                         "SkripClean",
-                        "Начата очистка системы...",
+                        f"Начата очистка системы в режиме {self.mode_combo.currentText()}...",
                         QSystemTrayIcon.Information,
                         2000
                     )
@@ -1227,7 +1344,7 @@ class MainWindow(QMainWindow):
                 print(f"Ошибка показа уведомления: {e}")
             
             # Запускаем очистку в отдельном потоке
-            self.cleaner_thread = CleanerThread()
+            self.cleaner_thread = CleanerThread(preview_mode=False, selected_items=selected_items, cleaning_mode=selected_mode)
             self.cleaner_thread.progress_updated.connect(self.update_cleanup_results)
             self.cleaner_thread.finished.connect(self.cleanup_finished)
             self.cleaner_thread.start()
@@ -1235,7 +1352,6 @@ class MainWindow(QMainWindow):
     def analysis_finished(self):
         """Обработка завершения анализа"""
         self.analyze_button.setEnabled(True)
-        self.cleanup_button.setEnabled(True)
         self.cleanup_progress.setRange(0, 100)
         self.cleanup_progress.setValue(100)
         self.cleanup_progress.setFormat("Анализ завершен")
@@ -1243,12 +1359,18 @@ class MainWindow(QMainWindow):
         # Получаем итоговые результаты анализа
         total_size = "0 Б"
         total_files = "0"
+        has_items = False
+        
         for i in range(self.cleanup_tree.topLevelItemCount()):
             item = self.cleanup_tree.topLevelItem(i)
-            if item.text(0) == "ИТОГО":
-                total_size = item.text(1)
-                total_files = item.text(2)
-                break
+            if item.text(1) == "ИТОГО":
+                total_size = item.text(2)
+                total_files = item.text(3)
+            elif item.checkState(0) == Qt.Checked:
+                has_items = True
+        
+        # Включаем кнопку очистки только если есть выбранные элементы
+        self.cleanup_button.setEnabled(has_items)
         
         # Показываем уведомление с результатами анализа
         try:
@@ -1270,22 +1392,34 @@ class MainWindow(QMainWindow):
         
         for category, data in results.items():
             category_item = QTreeWidgetItem(self.cleanup_tree)
-            category_item.setText(0, category)
-            size = data['cleaned_size']
-            files = data['files_removed']
-            category_item.setText(1, SystemCleaner().get_size_format(size))
-            category_item.setText(2, str(files))
+            category_item.setFlags(category_item.flags() | Qt.ItemIsUserCheckable)
+            category_item.setCheckState(0, Qt.Checked)
+            category_item.setText(1, category)
+            size = data.size_freed if hasattr(data, 'size_freed') else 0
+            files = data.files_removed if hasattr(data, 'files_removed') else 0
+            category_item.setText(2, SystemCleaner().get_size_format(size))
+            category_item.setText(3, str(files))
             total_size += size
             total_files += files
             
+            # Добавляем детали для категории, если есть
+            if hasattr(data, 'details') and data.details:
+                for detail in data.details:
+                    detail_item = QTreeWidgetItem(category_item)
+                    detail_item.setFlags(detail_item.flags() | Qt.ItemIsUserCheckable)
+                    detail_item.setCheckState(0, Qt.Checked)
+                    detail_item.setText(1, detail['path'])
+                    detail_item.setText(2, SystemCleaner().get_size_format(detail['size']))
+                    detail_item.setText(3, "1")
+        
         # Добавляем итоговую строку
         total_item = QTreeWidgetItem(self.cleanup_tree)
-        total_item.setText(0, "ИТОГО")
-        total_item.setText(1, SystemCleaner().get_size_format(total_size))
-        total_item.setText(2, str(total_files))
-        total_item.setBackground(0, QColor(240, 240, 240))
+        total_item.setText(1, "ИТОГО")
+        total_item.setText(2, SystemCleaner().get_size_format(total_size))
+        total_item.setText(3, str(total_files))
         total_item.setBackground(1, QColor(240, 240, 240))
         total_item.setBackground(2, QColor(240, 240, 240))
+        total_item.setBackground(3, QColor(240, 240, 240))
         
         # Разворачиваем все элементы
         self.cleanup_tree.expandAll()
@@ -1293,19 +1427,19 @@ class MainWindow(QMainWindow):
     def cleanup_finished(self):
         """Обработка завершения очистки"""
         self.analyze_button.setEnabled(True)
-        self.cleanup_button.setEnabled(True)
+        self.cleanup_button.setEnabled(False)  # Отключаем кнопку очистки после завершения
         self.cleanup_progress.setRange(0, 100)
         self.cleanup_progress.setValue(100)
         self.cleanup_progress.setFormat("Очистка завершена")
         
         # Получаем итоговые результаты очистки
-        total_size = 0
-        total_files = 0
+        total_size = "0 Б"
+        total_files = "0"
         for i in range(self.cleanup_tree.topLevelItemCount()):
             item = self.cleanup_tree.topLevelItem(i)
-            if item.text(0) == "ИТОГО":
-                size_text = item.text(1)
-                files_count = item.text(2)
+            if item.text(1) == "ИТОГО":
+                total_size = item.text(2)
+                total_files = item.text(3)
                 break
         
         # Показываем уведомление с результатами
@@ -1313,12 +1447,55 @@ class MainWindow(QMainWindow):
             if global_tray_icon and global_tray_icon.isVisible():
                 global_tray_icon.showMessage(
                     "SkripClean - Очистка завершена",
-                    f"Очищено: {size_text}\nУдалено файлов: {files_count}",
+                    f"Очищено: {total_size}\nУдалено файлов: {total_files}",
                     QSystemTrayIcon.Information,
                     5000  # Показываем на 5 секунд
                 )
         except Exception as e:
             print(f"Ошибка показа уведомления: {e}")
+        
+        # Запускаем новый анализ для обновления списка
+        self.analyze_system()
+
+    def on_cleanup_item_changed(self, item, column):
+        """Обработчик изменения состояния чекбокса в дереве результатов"""
+        if column == 0:  # Колонка с чекбоксами
+            # Если изменился родительский элемент
+            if item.parent() is None:
+                # Устанавливаем то же состояние для всех дочерних элементов
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    child.setCheckState(0, item.checkState(0))
+            else:
+                # Если изменился дочерний элемент, проверяем состояние родителя
+                parent = item.parent()
+                all_checked = True
+                all_unchecked = True
+                
+                for i in range(parent.childCount()):
+                    if parent.child(i).checkState(0) == Qt.Checked:
+                        all_unchecked = False
+                    else:
+                        all_checked = False
+                
+                if all_checked:
+                    parent.setCheckState(0, Qt.Checked)
+                elif all_unchecked:
+                    parent.setCheckState(0, Qt.Unchecked)
+                else:
+                    parent.setCheckState(0, Qt.PartiallyChecked)
+            
+            # Проверяем, есть ли выбранные элементы
+            has_checked_items = False
+            root = self.cleanup_tree.invisibleRootItem()
+            for i in range(root.childCount()):
+                category_item = root.child(i)
+                if category_item.text(1) != "ИТОГО" and category_item.checkState(0) != Qt.Unchecked:
+                    has_checked_items = True
+                    break
+            
+            # Включаем/выключаем кнопку очистки
+            self.cleanup_button.setEnabled(has_checked_items)
 
     def changeEvent(self, event):
         """Обработка изменения состояния окна"""

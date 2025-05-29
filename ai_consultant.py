@@ -13,7 +13,7 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def get_api_key():
     """Возвращает встроенный API ключ."""
-    return "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"
+    return "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"
 
 # Функция для анализа папки с помощью ИИ
 def analyze_folder(folder_path, folder_size, folder_name=None, callback=None):
